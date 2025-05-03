@@ -12,8 +12,37 @@ import hashlib
 import argparse
 import random
 import string
+import json
 from urllib.parse import urlparse
 from slugify import slugify
+from datetime import timedelta
+
+def generate_random_datetime(months=12, target_date=None):
+    """
+    Tạo ngày giờ ngẫu nhiên trong khoảng từ số tháng trước đến target_date
+
+    Args:
+        months (int): Số tháng trước target_date để bắt đầu khoảng thời gian
+        target_date (datetime, optional): Ngày đích để tính khoảng thời gian. Mặc định là tháng 5/2025
+
+    Returns:
+        datetime: Ngày giờ ngẫu nhiên
+    """
+    # Nếu không có target_date, sử dụng tháng 5/2025
+    if target_date is None:
+        target_date = datetime.datetime(2025, 5, 15, 12, 0, 0)  # 15/5/2025 12:00:00
+
+    # Tính thời gian bắt đầu (12 tháng trước target_date)
+    start_date = target_date - timedelta(days=30 * months)
+
+    # Tính số giây giữa hai thời điểm
+    time_delta = (target_date - start_date).total_seconds()
+
+    # Tạo một thời điểm ngẫu nhiên
+    random_seconds = random.randint(0, int(time_delta))
+    random_datetime = start_date + timedelta(seconds=random_seconds)
+
+    return random_datetime
 
 def extract_text_from_html(html):
     """
@@ -144,17 +173,25 @@ def extract_subcategory_from_content(soup):
         print(f"Lỗi khi trích xuất danh mục con từ nội dung: {e}")
         return None
 
-def create_category(category_name, parent_id=None):
+def create_category(category_name, parent_id=None, moderator_id=None):
     """
     Tạo danh mục mới nếu chưa tồn tại
 
     Args:
         category_name (str): Tên của danh mục
         parent_id (int, optional): ID của danh mục cha
+        moderator_id (int, optional): ID của kiểm duyệt viên (random từ [5, 6] nếu None và parent_id là None)
 
     Returns:
         int: ID của danh mục đã tạo hoặc None nếu có lỗi
     """
+    # Random moderator_id chỉ khi đây là category chính (không có parent_id)
+    # và moderator_id chưa được chỉ định
+    if parent_id is None and moderator_id is None:
+        moderator_id = random.choice([5, 6])
+    # Nếu đây là subcategory (có parent_id), đặt moderator_id là None
+    elif parent_id is not None:
+        moderator_id = None
     conn = connect_to_database()
     if not conn:
         return None
@@ -204,6 +241,13 @@ def create_category(category_name, parent_id=None):
         # Tạo câu lệnh SQL động dựa trên cấu trúc bảng
         column_names = ["name", "slug"]
         values = [category_name, slug]
+
+        # Chỉ thêm moderator_id nếu:
+        # 1. Trường moderator_id tồn tại trong bảng
+        # 2. moderator_id không phải là None (đã được xử lý ở đầu hàm)
+        if "moderator_id" in columns and moderator_id is not None:
+            column_names.append("moderator_id")
+            values.append(moderator_id)
 
         if "parent_id" in columns:
             column_names.append("parent_id")
@@ -635,18 +679,85 @@ def process_images_in_content(content_html, download_images=True):
     # Trả về nội dung HTML đã xử lý
     return str(soup)
 
-def save_to_database(data, author_id=4, category_id=2, subcategory_id=None, tags=None, download_images=True):
+def save_to_database(data, author_id=None, admin_id=None, moderator_id=None, user_id=None, category_id=2, subcategory_id=None, tags=None, download_images=True):
     """
     Lưu dữ liệu vào cơ sở dữ liệu
 
     Args:
         data (dict): Dữ liệu bài viết
-        author_id (int): ID của tác giả
+        author_id (int, optional): ID của tác giả (random từ [7, 8] nếu None)
+        admin_id (int, optional): ID của admin (random từ [3, 4] nếu None)
+        moderator_id (int, optional): ID của kiểm duyệt viên (random từ [5, 6] nếu None)
+        user_id (int, optional): ID của người dùng thông thường (random từ [9, 10] nếu None)
         category_id (int): ID của danh mục
         subcategory_id (int, optional): ID của danh mục con
         tags (list, optional): Danh sách các tag
         download_images (bool): Có tải ảnh về không
     """
+    # Tạo các thời gian ngẫu nhiên cho bài viết và các bảng liên quan
+    # Thời gian tạo bài viết (trong khoảng 12 tháng trước đến tháng 5/2025)
+    article_created_at = generate_random_datetime(months=12)
+
+    # Thời gian cho các bảng liên quan - đảm bảo thứ tự thời gian hợp lý
+    # Tạo một khoảng thời gian ngẫu nhiên (tính bằng phút) để thêm vào thời gian cơ sở
+
+    # Thời gian tạo phiên bản đầu tiên - cùng lúc với bài viết
+    version_created_at = article_created_at
+
+    # Thời gian tạo lịch sử bài viết - cùng lúc với bài viết
+    history_edited_at = article_created_at
+
+    # Thời gian tạo approval - sau khi tạo bài viết một chút (5-30 phút)
+    approval_created_at = article_created_at + timedelta(minutes=random.randint(5, 30))
+
+    # Random trạng thái approval
+    # Có 3 trạng thái có thể có: 'pending', 'approved', 'rejected'
+    # Tỷ lệ: 20% pending, 70% approved, 10% rejected
+    approval_status_random = random.random()
+    if approval_status_random < 0.2:
+        approval_status = 'pending'
+    elif approval_status_random < 0.9:
+        approval_status = 'approved'
+    else:
+        approval_status = 'rejected'
+
+    # Random trạng thái article dựa trên trạng thái approval
+    if approval_status == 'pending':
+        # Nếu approval đang pending, article cũng phải pending
+        article_status = 'pending'
+    elif approval_status == 'approved':
+        # Nếu approval đã approved, article có thể là published hoặc archived
+        # Tỷ lệ: 90% published, 10% archived
+        article_status = 'published' if random.random() < 0.9 else 'archived'
+    else:  # approval_status == 'rejected'
+        # Nếu approval bị rejected, article có thể là draft hoặc rejected
+        # Tỷ lệ: 30% draft, 70% rejected
+        article_status = 'draft' if random.random() < 0.3 else 'rejected'
+
+    # Thời gian cập nhật approval - sau khi tạo approval (10-60 phút)
+    # Nếu approval không còn ở trạng thái pending, thời gian cập nhật sẽ dài hơn
+    if approval_status == 'pending':
+        approval_updated_at = approval_created_at + timedelta(minutes=random.randint(10, 60))
+    else:
+        # Nếu đã approved hoặc rejected, thời gian xử lý lâu hơn (1-24 giờ)
+        approval_updated_at = approval_created_at + timedelta(hours=random.randint(1, 24))
+
+    # Thời gian cập nhật phiên bản - sau khi tạo phiên bản (nếu có chỉnh sửa, 1-3 giờ)
+    version_updated_at = version_created_at + timedelta(hours=random.randint(1, 3))
+
+    # Thời gian cập nhật bài viết - sau cùng, sau khi tất cả các quá trình khác hoàn tất
+    # Lấy thời gian muộn nhất trong các thời gian trên và thêm 30-60 phút
+    latest_time = max(approval_updated_at, version_updated_at)
+    article_updated_at = latest_time + timedelta(minutes=random.randint(30, 60))
+    # Random các ID người dùng nếu chưa được chỉ định
+    if author_id is None:
+        author_id = random.choice([7, 8])
+    if admin_id is None:
+        admin_id = random.choice([3, 4])
+    if moderator_id is None:
+        moderator_id = random.choice([5, 6])
+    if user_id is None:
+        user_id = random.choice([9, 10])
     conn = connect_to_database()
     if not conn:
         return False
@@ -656,6 +767,10 @@ def save_to_database(data, author_id=4, category_id=2, subcategory_id=None, tags
 
         # Tạo slug từ tiêu đề
         slug = slugify(data['title'])
+
+        # Thêm một chuỗi ngẫu nhiên vào slug để đảm bảo tính duy nhất
+        random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
+        slug = f"{slug}-{random_suffix}"
 
         # Tạo code cho bài viết
         current_date = datetime.datetime.now().strftime("%d%m%y")
@@ -706,8 +821,8 @@ def save_to_database(data, author_id=4, category_id=2, subcategory_id=None, tags
                         data['title'],
                         data['category_name'] or "Uncategorized",
                         content_html,
-                        datetime.datetime.now(),
-                        datetime.datetime.now()
+                        article_created_at,
+                        article_updated_at
                     )
 
                     cursor.execute(sql, values)
@@ -786,14 +901,22 @@ def save_to_database(data, author_id=4, category_id=2, subcategory_id=None, tags
 
             if "status" in columns:
                 column_names.append("status")
-                values.append('pending')
+                values.append(article_status)
+
+            # Thêm approved_by nếu có trong cấu trúc bảng và article đã được phê duyệt hoặc từ chối
+            if "approved_by" in columns:
+                column_names.append("approved_by")
+                if approval_status in ['approved', 'rejected']:
+                    values.append(approval_user_id)  # Người phê duyệt hoặc từ chối
+                else:
+                    values.append(None)  # Chưa được phê duyệt
 
             if "views" in columns:
                 column_names.append("views")
                 values.append(0)
 
             column_names.extend(["created_at", "updated_at"])
-            values.extend([datetime.datetime.now(), datetime.datetime.now()])
+            values.extend([article_created_at, article_updated_at])
 
             # Tạo câu lệnh SQL động
             placeholders = ", ".join(["%s"] * len(values))
@@ -809,23 +932,112 @@ def save_to_database(data, author_id=4, category_id=2, subcategory_id=None, tags
             approvals_exists = cursor.fetchone()
 
             if approvals_exists:
-                # Thêm vào bảng approvals
-                sql_approval = """
-                INSERT INTO approvals (type, article_id, user_id, status, remarks, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                """
+                # Kiểm tra cấu trúc bảng approvals
+                cursor.execute("SHOW COLUMNS FROM approvals")
+                approval_columns = [column[0] for column in cursor.fetchall()]
 
-                values_approval = (
+                # Chuẩn bị các trường và giá trị cơ bản
+                approval_column_names = ["type", "article_id", "user_id", "status", "remarks", "created_at", "updated_at"]
+
+                approval_values = [
                     'article',
                     article_id,
-                    author_id,
-                    'pending',
-                    'Bài viết mới, chờ kiểm duyệt',
-                    datetime.datetime.now(),
-                    datetime.datetime.now()
-                )
+                    approval_user_id,  # Sử dụng ID của admin hoặc kiểm duyệt viên
+                    approval_status,
+                    remarks,
+                    approval_created_at,
+                    approval_updated_at
+                ]
 
-                cursor.execute(sql_approval, values_approval)
+                # Thêm approved_by nếu có trong cấu trúc bảng và approval đã được phê duyệt hoặc từ chối
+                if "approved_by" in approval_columns:
+                    approval_column_names.append("approved_by")
+                    if approval_status in ['approved', 'rejected']:
+                        approval_values.append(approval_user_id)  # Người phê duyệt hoặc từ chối
+                    else:
+                        approval_values.append(None)  # Chưa được phê duyệt
+
+                # Thêm các trường bổ sung nếu có trong cấu trúc bảng
+                if "violation_level" in approval_columns:
+                    approval_column_names.append("violation_level")
+                    # Nếu bị từ chối, có thể có mức độ vi phạm
+                    if approval_status == 'rejected':
+                        # Random mức độ vi phạm: 10% none, 30% low, 40% medium, 20% high
+                        violation_random = random.random()
+                        if violation_random < 0.1:
+                            violation_level = "none"
+                        elif violation_random < 0.4:
+                            violation_level = "low"
+                        elif violation_random < 0.8:
+                            violation_level = "medium"
+                        else:
+                            violation_level = "high"
+                    else:
+                        violation_level = "none"
+                    approval_values.append(violation_level)
+
+                if "violations" in approval_columns:
+                    approval_column_names.append("violations")
+                    # Nếu bị từ chối và có mức độ vi phạm, thêm thông tin vi phạm
+                    if approval_status == 'rejected' and 'violation_level' in locals() and violation_level != "none":
+                        possible_violations = [
+                            "Nội dung không phù hợp",
+                            "Thông tin sai lệch",
+                            "Vi phạm bản quyền",
+                            "Ngôn ngữ không phù hợp",
+                            "Quảng cáo trá hình",
+                            "Nội dung nhạy cảm"
+                        ]
+                        # Chọn 1-3 vi phạm ngẫu nhiên
+                        num_violations = random.randint(1, min(3, len(possible_violations)))
+                        violations = random.sample(possible_violations, num_violations)
+                        violations_text = ", ".join(violations)
+                    else:
+                        violations_text = None
+                    approval_values.append(violations_text)
+
+                if "violation_details" in approval_columns:
+                    approval_column_names.append("violation_details")
+                    # Nếu có vi phạm, thêm chi tiết
+                    if 'violations_text' in locals() and violations_text:
+                        # Tạo JSON với chi tiết vi phạm
+                        violation_details = {}
+                        for i, violation in enumerate(violations):
+                            violation_details[f"violation_{i+1}"] = {
+                                "type": violation,
+                                "description": f"Chi tiết về vi phạm: {violation.lower()}",
+                                "severity": violation_level
+                            }
+                        violation_details_json = json.dumps(violation_details)
+                    else:
+                        violation_details_json = None
+                    approval_values.append(violation_details_json)
+
+                if "processed_at" in approval_columns:
+                    approval_column_names.append("processed_at")
+                    # Nếu approval đã được xử lý (approved hoặc rejected), thêm thời gian xử lý
+                    if approval_status in ['approved', 'rejected']:
+                        processed_at = approval_updated_at
+                    else:
+                        processed_at = None
+                    approval_values.append(processed_at)
+
+                if "processed_by" in approval_columns:
+                    approval_column_names.append("processed_by")
+                    # Nếu approval đã được xử lý, thêm người xử lý
+                    if approval_status in ['approved', 'rejected']:
+                        processed_by = approval_user_id
+                    else:
+                        processed_by = None
+                    approval_values.append(processed_by)
+
+                # Tạo câu lệnh SQL động
+                approval_placeholders = ", ".join(["%s"] * len(approval_values))
+                approval_columns_str = ", ".join(approval_column_names)
+
+                sql_approval = f"INSERT INTO approvals ({approval_columns_str}) VALUES ({approval_placeholders})"
+
+                cursor.execute(sql_approval, approval_values)
 
             # Kiểm tra bảng tags và article_tags
             cursor.execute("SHOW TABLES LIKE 'tags'")
@@ -855,9 +1067,145 @@ def save_to_database(data, author_id=4, category_id=2, subcategory_id=None, tags
                     # Thêm vào bảng article_tags
                     cursor.execute(
                         "INSERT INTO article_tags (article_id, tag_id, created_at, updated_at) VALUES (%s, %s, %s, %s)",
-                        (article_id, tag_id, datetime.datetime.now(), datetime.datetime.now())
+                        (article_id, tag_id, article_created_at, article_updated_at)
                     )
                     print(f"Đã thêm tag '{tag_name}' cho bài viết")
+
+            # Kiểm tra bảng article_versions
+            cursor.execute("SHOW TABLES LIKE 'article_versions'")
+            article_versions_exists = cursor.fetchone()
+
+            if article_versions_exists:
+                # Kiểm tra cấu trúc bảng article_versions
+                cursor.execute("SHOW COLUMNS FROM article_versions")
+                version_columns = [column[0] for column in cursor.fetchall()]
+
+                # Sử dụng thời gian đã được tạo ở đầu hàm
+                # Không cần tạo lại thời gian ở đây
+
+                # Tạo version_id duy nhất
+                version_id = f"V-{version_created_at.strftime('%Y%m%d%H%M%S')}-{hashlib.md5(str(article_id).encode()).hexdigest()[:8]}"
+
+                # Chuẩn bị các trường và giá trị cơ bản
+                version_column_names = ["version_id", "article_id", "user_id", "title", "content", "slug"]
+                version_values = [
+                    version_id,
+                    article_id,
+                    author_id,  # Sử dụng ID của tác giả vì tác giả là người tạo và chỉnh sửa bài viết
+                    data['title'],
+                    content_html,
+                    slug
+                ]
+
+                # Thêm các trường bổ sung nếu có trong cấu trúc bảng
+                if "category_id" in version_columns:
+                    version_column_names.append("category_id")
+                    version_values.append(category_id)
+
+                if "subcategory_id" in version_columns:
+                    version_column_names.append("subcategory_id")
+                    version_values.append(subcategory_id)
+
+                if "featured_image" in version_columns:
+                    version_column_names.append("featured_image")
+                    version_values.append(thumbnail_url)
+
+                if "tags" in version_columns and tags:
+                    version_column_names.append("tags")
+                    version_values.append(json.dumps(tags))
+
+                if "change_reason" in version_columns:
+                    version_column_names.append("change_reason")
+                    version_values.append("Bài viết mới từ crawl")
+
+                if "created_at" in version_columns:
+                    version_column_names.append("created_at")
+                    version_values.append(version_created_at)
+
+                if "updated_at" in version_columns:
+                    version_column_names.append("updated_at")
+                    version_values.append(version_updated_at)
+
+                # Tạo câu lệnh SQL động
+                version_placeholders = ", ".join(["%s"] * len(version_values))
+                version_columns_str = ", ".join(version_column_names)
+
+                sql_version = f"INSERT INTO article_versions ({version_columns_str}) VALUES ({version_placeholders})"
+
+                cursor.execute(sql_version, version_values)
+                print(f"Đã thêm phiên bản đầu tiên cho bài viết với ID: {article_id}")
+
+            # Kiểm tra bảng article_history
+            cursor.execute("SHOW TABLES LIKE 'article_history'")
+            article_history_exists = cursor.fetchone()
+
+            if article_history_exists:
+                # Thêm vào bảng article_history
+                sql_history = """
+                INSERT INTO article_history (article_id, content, edited_by, edited_at)
+                VALUES (%s, %s, %s, %s)
+                """
+
+                # Sử dụng thời gian đã được tạo ở đầu hàm
+                # Không cần tạo lại thời gian ở đây
+
+                values_history = (
+                    article_id,
+                    content_html,
+                    author_id,  # Sử dụng ID của tác giả vì tác giả là người tạo và chỉnh sửa bài viết
+                    history_edited_at
+                )
+
+                cursor.execute(sql_history, values_history)
+                print(f"Đã thêm lịch sử cho bài viết với ID: {article_id}")
+
+            # Kiểm tra bảng article_media
+            cursor.execute("SHOW TABLES LIKE 'article_media'")
+            article_media_exists = cursor.fetchone()
+
+            if article_media_exists and thumbnail_url:
+                # Thêm thumbnail vào bảng article_media
+                sql_media = """
+                INSERT INTO article_media (article_id, media_type, media_url, caption, position)
+                VALUES (%s, %s, %s, %s, %s)
+                """
+
+                values_media = (
+                    article_id,
+                    'image',
+                    thumbnail_url,
+                    data['title'],
+                    0  # Vị trí đầu tiên
+                )
+
+                cursor.execute(sql_media, values_media)
+                print(f"Đã thêm thumbnail vào bảng article_media cho bài viết với ID: {article_id}")
+
+                # Trích xuất các ảnh từ nội dung và thêm vào bảng article_media
+                soup = BeautifulSoup(content_html, 'html.parser')
+                images = soup.find_all('img')
+
+                for i, img in enumerate(images, 1):
+                    if img.has_attr('src'):
+                        img_url = img['src']
+                        img_caption = img.get('alt', '') or data['title']
+
+                        # Thêm ảnh vào bảng article_media
+                        sql_media = """
+                        INSERT INTO article_media (article_id, media_type, media_url, caption, position)
+                        VALUES (%s, %s, %s, %s, %s)
+                        """
+
+                        values_media = (
+                            article_id,
+                            'image',
+                            img_url,
+                            img_caption,
+                            i  # Vị trí tăng dần
+                        )
+
+                        cursor.execute(sql_media, values_media)
+                        print(f"Đã thêm ảnh từ nội dung vào bảng article_media cho bài viết với ID: {article_id}")
 
             conn.commit()
             print(f"Đã lưu bài viết '{data['title']}' vào cơ sở dữ liệu với ID: {article_id}")
@@ -867,6 +1215,11 @@ def save_to_database(data, author_id=4, category_id=2, subcategory_id=None, tags
             print(f"Lỗi khi kiểm tra cấu trúc bảng: {e}")
 
             # Sử dụng cấu trúc mặc định nếu có lỗi
+            # Tạo slug mới với chuỗi ngẫu nhiên để đảm bảo tính duy nhất
+            slug = slugify(data['title'])
+            random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
+            slug = f"{slug}-{random_suffix}"
+
             # Kiểm tra xem bài viết đã tồn tại chưa
             cursor.execute("SELECT article_id FROM articles WHERE slug = %s", (slug,))
             existing_article = cursor.fetchone()
@@ -892,9 +1245,29 @@ def save_to_database(data, author_id=4, category_id=2, subcategory_id=None, tags
             sql = """
             INSERT INTO articles (code, title, slug, content, preview_content,
                                 contains_sensitive_content, author_id, category_id, subcategory_id,
-                                thumbnail_url, status, views, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                thumbnail_url, status, views, approved_by, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
+
+            # Random giữa admin và moderator cho người kiểm duyệt
+            approval_user_id = random.choice([admin_id, moderator_id])
+
+            # Tạo ghi chú phù hợp với trạng thái approval
+            if approval_status == 'pending':
+                remarks = 'Bài viết mới, chờ kiểm duyệt'
+            elif approval_status == 'approved':
+                remarks = 'Bài viết đã được phê duyệt'
+            else:  # rejected
+                # Tạo lý do từ chối ngẫu nhiên
+                reject_reasons = [
+                    'Bài viết bị từ chối do vi phạm quy định về nội dung',
+                    'Bài viết chứa thông tin không chính xác',
+                    'Bài viết có nội dung nhạy cảm không phù hợp',
+                    'Bài viết trùng lặp với nội dung đã có',
+                    'Bài viết không đáp ứng tiêu chuẩn chất lượng',
+                    'Bài viết vi phạm bản quyền'
+                ]
+                remarks = random.choice(reject_reasons)
 
             values = (
                 code,
@@ -907,32 +1280,115 @@ def save_to_database(data, author_id=4, category_id=2, subcategory_id=None, tags
                 category_id,
                 subcategory_id,  # subcategory_id
                 thumbnail_url,
-                'pending',  # status
+                article_status,  # status
                 0,  # views
-                datetime.datetime.now(),
-                datetime.datetime.now()
+                approval_user_id if approval_status in ['approved', 'rejected'] else None,  # approved_by
+                article_created_at,
+                article_updated_at
             )
 
             cursor.execute(sql, values)
             article_id = cursor.lastrowid
 
-            # Thêm vào bảng approvals
-            sql_approval = """
-            INSERT INTO approvals (type, article_id, user_id, status, remarks, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """
+            # Kiểm tra cấu trúc bảng approvals
+            cursor.execute("SHOW COLUMNS FROM approvals")
+            approval_columns = [column[0] for column in cursor.fetchall()]
 
-            values_approval = (
+            # Chuẩn bị các trường và giá trị cơ bản
+            approval_column_names = ["type", "article_id", "user_id", "status", "remarks", "created_at", "updated_at"]
+            # Random giữa admin và moderator cho người kiểm duyệt
+            approval_user_id = random.choice([admin_id, moderator_id])
+            approval_values = [
                 'article',
                 article_id,
-                author_id,
-                'pending',
-                'Bài viết mới, chờ kiểm duyệt',
-                datetime.datetime.now(),
-                datetime.datetime.now()
-            )
+                approval_user_id,  # Sử dụng ID của admin hoặc kiểm duyệt viên
+                approval_status,
+                remarks,
+                approval_created_at,
+                approval_updated_at
+            ]
 
-            cursor.execute(sql_approval, values_approval)
+            # Thêm các trường bổ sung nếu có trong cấu trúc bảng
+            if "violation_level" in approval_columns:
+                approval_column_names.append("violation_level")
+                # Nếu bị từ chối, có thể có mức độ vi phạm
+                if approval_status == 'rejected':
+                    # Random mức độ vi phạm: 10% none, 30% low, 40% medium, 20% high
+                    violation_random = random.random()
+                    if violation_random < 0.1:
+                        violation_level = "none"
+                    elif violation_random < 0.4:
+                        violation_level = "low"
+                    elif violation_random < 0.8:
+                        violation_level = "medium"
+                    else:
+                        violation_level = "high"
+                else:
+                    violation_level = "none"
+                approval_values.append(violation_level)
+
+            if "violations" in approval_columns:
+                approval_column_names.append("violations")
+                # Nếu bị từ chối và có mức độ vi phạm, thêm thông tin vi phạm
+                if approval_status == 'rejected' and 'violation_level' in locals() and violation_level != "none":
+                    possible_violations = [
+                        "Nội dung không phù hợp",
+                        "Thông tin sai lệch",
+                        "Vi phạm bản quyền",
+                        "Ngôn ngữ không phù hợp",
+                        "Quảng cáo trá hình",
+                        "Nội dung nhạy cảm"
+                    ]
+                    # Chọn 1-3 vi phạm ngẫu nhiên
+                    num_violations = random.randint(1, min(3, len(possible_violations)))
+                    violations = random.sample(possible_violations, num_violations)
+                    violations_text = ", ".join(violations)
+                else:
+                    violations_text = None
+                approval_values.append(violations_text)
+
+            if "violation_details" in approval_columns:
+                approval_column_names.append("violation_details")
+                # Nếu có vi phạm, thêm chi tiết
+                if 'violations_text' in locals() and violations_text:
+                    # Tạo JSON với chi tiết vi phạm
+                    violation_details = {}
+                    for i, violation in enumerate(violations):
+                        violation_details[f"violation_{i+1}"] = {
+                            "type": violation,
+                            "description": f"Chi tiết về vi phạm: {violation.lower()}",
+                            "severity": violation_level
+                        }
+                    violation_details_json = json.dumps(violation_details)
+                else:
+                    violation_details_json = None
+                approval_values.append(violation_details_json)
+
+            if "processed_at" in approval_columns:
+                approval_column_names.append("processed_at")
+                # Nếu approval đã được xử lý (approved hoặc rejected), thêm thời gian xử lý
+                if approval_status in ['approved', 'rejected']:
+                    processed_at = approval_updated_at
+                else:
+                    processed_at = None
+                approval_values.append(processed_at)
+
+            if "processed_by" in approval_columns:
+                approval_column_names.append("processed_by")
+                # Nếu approval đã được xử lý, thêm người xử lý
+                if approval_status in ['approved', 'rejected']:
+                    processed_by = approval_user_id
+                else:
+                    processed_by = None
+                approval_values.append(processed_by)
+
+            # Tạo câu lệnh SQL động
+            approval_placeholders = ", ".join(["%s"] * len(approval_values))
+            approval_columns_str = ", ".join(approval_column_names)
+
+            sql_approval = f"INSERT INTO approvals ({approval_columns_str}) VALUES ({approval_placeholders})"
+
+            cursor.execute(sql_approval, approval_values)
 
             # Thêm tags vào bảng article_tags nếu có
             if tags and isinstance(tags, list) and len(tags) > 0:
@@ -955,9 +1411,145 @@ def save_to_database(data, author_id=4, category_id=2, subcategory_id=None, tags
                     # Thêm vào bảng article_tags
                     cursor.execute(
                         "INSERT INTO article_tags (article_id, tag_id, created_at, updated_at) VALUES (%s, %s, %s, %s)",
-                        (article_id, tag_id, datetime.datetime.now(), datetime.datetime.now())
+                        (article_id, tag_id, article_created_at, article_updated_at)
                     )
                     print(f"Đã thêm tag '{tag_name}' cho bài viết")
+
+            # Kiểm tra bảng article_versions
+            cursor.execute("SHOW TABLES LIKE 'article_versions'")
+            article_versions_exists = cursor.fetchone()
+
+            if article_versions_exists:
+                # Kiểm tra cấu trúc bảng article_versions
+                cursor.execute("SHOW COLUMNS FROM article_versions")
+                version_columns = [column[0] for column in cursor.fetchall()]
+
+                # Sử dụng thời gian đã được tạo ở đầu hàm
+                # Không cần tạo lại thời gian ở đây
+
+                # Tạo version_id duy nhất
+                version_id = f"V-{version_created_at.strftime('%Y%m%d%H%M%S')}-{hashlib.md5(str(article_id).encode()).hexdigest()[:8]}"
+
+                # Chuẩn bị các trường và giá trị cơ bản
+                version_column_names = ["version_id", "article_id", "user_id", "title", "content", "slug"]
+                version_values = [
+                    version_id,
+                    article_id,
+                    author_id,  # Sử dụng ID của tác giả vì tác giả là người tạo và chỉnh sửa bài viết
+                    data['title'],
+                    content_html,
+                    slug
+                ]
+
+                # Thêm các trường bổ sung nếu có trong cấu trúc bảng
+                if "category_id" in version_columns:
+                    version_column_names.append("category_id")
+                    version_values.append(category_id)
+
+                if "subcategory_id" in version_columns:
+                    version_column_names.append("subcategory_id")
+                    version_values.append(subcategory_id)
+
+                if "featured_image" in version_columns:
+                    version_column_names.append("featured_image")
+                    version_values.append(thumbnail_url)
+
+                if "tags" in version_columns and tags:
+                    version_column_names.append("tags")
+                    version_values.append(json.dumps(tags))
+
+                if "change_reason" in version_columns:
+                    version_column_names.append("change_reason")
+                    version_values.append("Bài viết mới từ crawl")
+
+                if "created_at" in version_columns:
+                    version_column_names.append("created_at")
+                    version_values.append(version_created_at)
+
+                if "updated_at" in version_columns:
+                    version_column_names.append("updated_at")
+                    version_values.append(version_updated_at)
+
+                # Tạo câu lệnh SQL động
+                version_placeholders = ", ".join(["%s"] * len(version_values))
+                version_columns_str = ", ".join(version_column_names)
+
+                sql_version = f"INSERT INTO article_versions ({version_columns_str}) VALUES ({version_placeholders})"
+
+                cursor.execute(sql_version, version_values)
+                print(f"Đã thêm phiên bản đầu tiên cho bài viết với ID: {article_id}")
+
+            # Kiểm tra bảng article_history
+            cursor.execute("SHOW TABLES LIKE 'article_history'")
+            article_history_exists = cursor.fetchone()
+
+            if article_history_exists:
+                # Thêm vào bảng article_history
+                sql_history = """
+                INSERT INTO article_history (article_id, content, edited_by, edited_at)
+                VALUES (%s, %s, %s, %s)
+                """
+
+                # Sử dụng thời gian đã được tạo ở đầu hàm
+                # Không cần tạo lại thời gian ở đây
+
+                values_history = (
+                    article_id,
+                    content_html,
+                    author_id,  # Sử dụng ID của tác giả vì tác giả là người tạo và chỉnh sửa bài viết
+                    history_edited_at
+                )
+
+                cursor.execute(sql_history, values_history)
+                print(f"Đã thêm lịch sử cho bài viết với ID: {article_id}")
+
+            # Kiểm tra bảng article_media
+            cursor.execute("SHOW TABLES LIKE 'article_media'")
+            article_media_exists = cursor.fetchone()
+
+            if article_media_exists and thumbnail_url:
+                # Thêm thumbnail vào bảng article_media
+                sql_media = """
+                INSERT INTO article_media (article_id, media_type, media_url, caption, position)
+                VALUES (%s, %s, %s, %s, %s)
+                """
+
+                values_media = (
+                    article_id,
+                    'image',
+                    thumbnail_url,
+                    data['title'],
+                    0  # Vị trí đầu tiên
+                )
+
+                cursor.execute(sql_media, values_media)
+                print(f"Đã thêm thumbnail vào bảng article_media cho bài viết với ID: {article_id}")
+
+                # Trích xuất các ảnh từ nội dung và thêm vào bảng article_media
+                soup = BeautifulSoup(content_html, 'html.parser')
+                images = soup.find_all('img')
+
+                for i, img in enumerate(images, 1):
+                    if img.has_attr('src'):
+                        img_url = img['src']
+                        img_caption = img.get('alt', '') or data['title']
+
+                        # Thêm ảnh vào bảng article_media
+                        sql_media = """
+                        INSERT INTO article_media (article_id, media_type, media_url, caption, position)
+                        VALUES (%s, %s, %s, %s, %s)
+                        """
+
+                        values_media = (
+                            article_id,
+                            'image',
+                            img_url,
+                            img_caption,
+                            i  # Vị trí tăng dần
+                        )
+
+                        cursor.execute(sql_media, values_media)
+                        print(f"Đã thêm ảnh từ nội dung vào bảng article_media cho bài viết với ID: {article_id}")
 
             conn.commit()
             print(f"Đã lưu bài viết '{data['title']}' vào cơ sở dữ liệu với ID: {article_id}")
@@ -1033,7 +1625,10 @@ def main():
     """
     parser = argparse.ArgumentParser(description='Crawl bài báo từ Dân Trí và lưu vào cơ sở dữ liệu')
     parser.add_argument('url', help='URL của bài viết cần crawl')
-    parser.add_argument('--author', type=int, default=4, help='ID của tác giả (mặc định: 4)')
+    parser.add_argument('--author', type=int, help='ID của tác giả (mặc định: random từ [7, 8])')
+    parser.add_argument('--admin', type=int, help='ID của admin (mặc định: random từ [3, 4])')
+    parser.add_argument('--moderator', type=int, help='ID của kiểm duyệt viên (mặc định: random từ [5, 6])')
+    parser.add_argument('--normal-user', type=int, help='ID của người dùng thông thường (mặc định: random từ [9, 10])')
     parser.add_argument('--category', type=int, help='ID của danh mục (tự động xác định nếu không chỉ định)')
     parser.add_argument('--subcategory', type=int, help='ID của danh mục con (tự động xác định nếu không chỉ định)')
     parser.add_argument('--tags', help='Danh sách các tag, phân cách bằng dấu phẩy (tự động trích xuất nếu không chỉ định)')
@@ -1125,14 +1720,17 @@ def main():
                     print(f"Đã tự động xác định subcategory_id: {subcategory_id} ('{data['subcategory_name']}')")
             else:
                 print(f"Không tìm thấy category_id cho '{data['category_name']}' trong cơ sở dữ liệu")
-                # Tạo category mới
-                new_category_id = create_category(data['category_name'])
+                # Tạo category mới với moderator_id
+                # Sử dụng random moderator_id từ [5, 6]
+                random_moderator_id = random.choice([5, 6])
+                new_category_id = create_category(data['category_name'], moderator_id=random_moderator_id)
                 if new_category_id:
                     category_id = new_category_id
                     print(f"Đã tạo category mới với ID: {category_id}")
 
                     # Tạo subcategory nếu có
                     if subcategory_id is None and data.get('subcategory_name'):
+                        # Subcategory chỉ cần parent_id, không cần moderator_id
                         new_subcategory_id = create_category(data['subcategory_name'], parent_id=category_id)
                         if new_subcategory_id:
                             subcategory_id = new_subcategory_id
@@ -1140,8 +1738,9 @@ def main():
 
         # Sử dụng giá trị mặc định nếu vẫn không xác định được
         if category_id is None:
-            # Thử tạo category mặc định
-            default_category_id = create_category("Uncategorized")
+            # Thử tạo category mặc định với random moderator_id
+            random_moderator_id = random.choice([5, 6])
+            default_category_id = create_category("Uncategorized", moderator_id=random_moderator_id)
             if default_category_id:
                 category_id = default_category_id
             else:
@@ -1153,6 +1752,7 @@ def main():
             print(f"Không tìm thấy subcategory_id cho '{data['subcategory_name']}' trong cơ sở dữ liệu")
             # Tạo subcategory mới nếu có category_id
             if category_id:
+                # Subcategory chỉ cần parent_id, không cần moderator_id
                 new_subcategory_id = create_category(data['subcategory_name'], parent_id=category_id)
                 if new_subcategory_id:
                     subcategory_id = new_subcategory_id
@@ -1167,6 +1767,9 @@ def main():
             article_id = save_to_database(
                 data,
                 author_id=args.author,
+                admin_id=args.admin,
+                moderator_id=args.moderator,
+                user_id=args.normal_user,
                 category_id=category_id,
                 subcategory_id=subcategory_id,
                 tags=tags,
